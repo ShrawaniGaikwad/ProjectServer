@@ -6,6 +6,8 @@ const rateLimit = require('express-rate-limit');
 const mongoSanitize = require('express-mongo-sanitize');
 const xss = require('xss-clean');
 const dotenv = require('dotenv');
+const axios = require('axios');
+
 
 dotenv.config(); 
 
@@ -16,6 +18,13 @@ app.use(cors());
 app.use(express.json({ limit: '10kb' })); 
 app.use(mongoSanitize()); 
 app.use(xss()); 
+app.use((req, res, next) => {
+    res.setHeader(
+      "Content-Security-Policy",
+      "frame-ancestors 'self' https://www.google.com https://www.gstatic.com"
+    );
+    next();
+  });
 
 const limiter = rateLimit({
     max: 100, 
@@ -25,10 +34,7 @@ const limiter = rateLimit({
 app.use('/help', limiter);
 app.use('/contact', limiter);
 
-mongoose.connect(process.env.MONGO_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-})
+mongoose.connect(process.env.MONGO_URI)
     .then(() => console.log('Connected to MongoDB'))
     .catch((error) => console.error('Error connecting to MongoDB:', error));
 
@@ -51,8 +57,32 @@ const contactSchema = new mongoose.Schema({
 const Help = mongoose.model('help', helpSchema,'help');
 const Contact = mongoose.model('contact', contactSchema,'contact');
 
+
+const verifyRecaptcha = async (token) => {
+    const secretKey = process.env.RECAPTCHA_SECRET_KEY; 
+    const url = `https://www.google.com/recaptcha/api/siteverify?secret=${secretKey}&response=${token}`;
+
+    try {
+        const response = await axios.post(url);
+        console.log("Response from reCAPTCHA:", response.data);
+
+        console.log("Captcha verified successfully");
+        return response.data.success; 
+    } catch (error) {
+        console.error('Error verifying reCAPTCHA:', error);
+        return false;
+    }
+};
 app.post('/help', async (req, res) => {
     try {
+
+        const { recaptcha } = req.body;
+
+        const isCaptchaValid = await verifyRecaptcha(recaptcha);
+        if (!isCaptchaValid) {
+            return res.status(400).json({ error: 'Invalid reCAPTCHA. Please try again.' });
+        }
+
         console.log(req.body)
         const newHelp = new Help(req.body);
 
@@ -65,6 +95,12 @@ app.post('/help', async (req, res) => {
 
 app.post('/contact', async (req, res) => {
     try {
+
+        const { recaptcha } = req.body;
+        const isCaptchaValid = await verifyRecaptcha(recaptcha);
+        if (!isCaptchaValid) {
+            return res.status(400).json({ error: 'Invalid reCAPTCHA. Please try again.' });
+        }
         const newContact = new Contact(req.body);
         const savedContact = await newContact.save();
         res.json({ message: 'Contact data added successfully', newContact: savedContact });
